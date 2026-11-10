@@ -1,0 +1,10 @@
+node_modules/
+dist/
+# uploaded tracks, images and the admin password live outside git
+server/data/
+.env
+ecosystem.config.js
+# planning docs stay local
+requirements/
+*.log
+.DS_Store
