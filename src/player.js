@@ -15,6 +15,8 @@ let currentId = null; // the track shown in the middle
 let loadedId = null; // the track the engine has loaded
 let queue = []; // ids of the list the current track was started from (for next / previous)
 let busy = false;
+let playedFor = 0; // seconds the current track has actually been playing (pauses don't count)
+const LOOP_STEPS = [0, 30, 60, 120, 300]; // 0 = non-stop
 
 const byId = (id) => tracks.find((t) => t.id === id) ?? null;
 const imageOf = (t) => t?.image || DEFAULT_IMAGE;
@@ -53,6 +55,7 @@ async function playTrack(id, { fromList = true } = {}) {
   try {
     const { warnings } = await audio.play(await patchOf(id));
     loadedId = id;
+    playedFor = 0;
     for (const w of warnings) toast(w, 'warn');
   } catch (e) {
     loadedId = null;
@@ -80,6 +83,52 @@ function step(dir) {
   playTrack(list[(i + dir + list.length) % list.length], { fromList: false });
 }
 
+// LOOP button: how long a track plays before moving on to the next one
+const REPEAT_SVG = '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17 2l4 4-4 4"/><path d="M3 11V9a3 3 0 0 1 3-3h15"/><path d="M7 22l-4-4 4-4"/><path d="M21 13v2a3 3 0 0 1-3 3H3"/></svg>';
+const loopLabel = (sec) => (sec === 0 ? 'Non-stop' : sec < 60 ? `${sec} seconds` : `${sec / 60} minute${sec > 60 ? 's' : ''}`);
+function cycleLoop() {
+  const i = LOOP_STEPS.indexOf(lib.loopFor());
+  lib.setLoopFor(LOOP_STEPS[(i + 1) % LOOP_STEPS.length]);
+  playedFor = 0; // a fresh choice counts from now
+  renderLoop();
+  renderProgress();
+  toast(lib.loopFor() ? `Each track plays for ${loopLabel(lib.loopFor())}, then the next one starts` : 'Non-stop: the track loops until you change it');
+}
+function renderLoop() {
+  const sec = lib.loopFor();
+  loopBtn.classList.toggle('timed', sec > 0);
+  if (sec === 0) loopBtn.innerHTML = REPEAT_SVG;
+  else loopBtn.textContent = sec < 60 ? `${sec}s` : `${sec / 60}m`;
+  loopBtn.title = `Play each track: ${loopLabel(sec)} (tap to change)`;
+  loopBtn.setAttribute('aria-label', loopBtn.title);
+}
+let lastTick = performance.now();
+setInterval(() => {
+  const now = performance.now();
+  const dt = (now - lastTick) / 1000;
+  lastTick = now;
+  const limit = lib.loopFor();
+  if (limit && !busy && loadedId && audio.isPlaying()) {
+    playedFor += dt;
+    if (playedFor >= limit) {
+      playedFor = 0;
+      step(1);
+    }
+  }
+  renderProgress();
+}, 250);
+
+// thin line along the top of the transport bar: how much of the timed play is used up (hidden when non-stop)
+let lastFrac = 0;
+function renderProgress() {
+  const limit = lib.loopFor();
+  progress.hidden = !limit || !loadedId;
+  const frac = limit ? Math.min(1, playedFor / limit) : 0;
+  progress.firstChild.style.transition = frac < lastFrac ? 'none' : ''; // snap back on a new track, glide forward otherwise
+  progress.firstChild.style.transform = `scaleX(${frac})`;
+  lastFrac = frac;
+}
+
 function mediaSession(t) {
   if (!('mediaSession' in navigator)) return;
   navigator.mediaSession.metadata = new MediaMetadata({ title: t.title, artist: 'BonfireSTACK', artwork: [{ src: new URL(imageOf(t), location.href).href }] });
@@ -105,6 +154,8 @@ const search = h('input', {
 const listTitle = h('div', { class: 'list-title' });
 const panel = h('section', { class: 'panel' }, h('div', { class: 'search-wrap' }, search, h('span', { class: 'search-icon', 'aria-hidden': 'true' }, '⌕')), listTitle, listBox);
 const playBtn = h('button', { class: 'round big', 'aria-label': 'Play', onclick: togglePlay });
+const loopBtn = h('button', { class: 'round loop', onclick: cycleLoop });
+const progress = h('div', { class: 'progress', hidden: true, 'aria-hidden': 'true' }, h('div', { class: 'progress-fill' }));
 const scopeCanvas = h('canvas', { class: 'scope', width: 900, height: 96 });
 const volume = h('input', {
   class: 'volume', type: 'range', min: 0, max: 1, step: 0.01, value: lib.volume(), 'aria-label': 'Volume',
@@ -115,8 +166,10 @@ const volume = h('input', {
 });
 const nowPlaying = h('div', { class: 'now' });
 const transport = h('footer', { class: 'transport' },
+  progress,
   nowPlaying,
   h('div', { class: 'buttons' },
+    loopBtn,
     h('button', { class: 'round', 'aria-label': 'Previous track', onclick: () => step(-1) }, '⏮'),
     playBtn,
     h('button', { class: 'round', 'aria-label': 'Next track', onclick: () => step(1) }, '⏭')),
@@ -362,6 +415,7 @@ window.addEventListener('keydown', (e) => {
   renderHero();
   renderList();
   renderTransport();
+  renderLoop();
   drawScope();
   showNotice();
   try {

@@ -1,7 +1,7 @@
 // What a listener keeps: liked tracks, their own playlists, the volume. All of it lives in this
 // browser only (localStorage), nothing is sent anywhere.
 const KEY = 'bonfirestack-tracks.v1';
-const blank = () => ({ favorites: [], playlists: [], volume: 0.8, weakDismissed: false });
+const blank = () => ({ favorites: [], playlists: [], volume: 0.8, weakDismissed: false, loopFor: 0 });
 
 let data = blank();
 try {
@@ -54,6 +54,11 @@ export function toggleInPlaylist(id, trackId) {
 export const volume = () => data.volume;
 export function setVolume(v) {
   data.volume = Math.min(1, Math.max(0, v));
+  save();
+}
+export const loopFor = () => data.loopFor; // seconds a track plays before NEXT; 0 = non-stop
+export function setLoopFor(sec) {
+  data.loopFor = sec;
   save();
 }
 export const weakDismissed = () => data.weakDismissed;
