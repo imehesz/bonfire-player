@@ -391,11 +391,32 @@ function showNotice() {
     } }, 'Got it'));
 }
 
+// ---------------- keep the screen on while playing ----------------
+// Phones throttle a page whose screen went dark, and the live synthesis stops with it. The Screen
+// Wake Lock API keeps the screen on while a track plays (HTTPS only; the browser drops the lock
+// whenever the tab is hidden, so it is asked for again when the tab comes back).
+let wakeLock = null;
+async function syncWakeLock() {
+  if (!('wakeLock' in navigator)) return;
+  const want = audio.isPlaying() && document.visibilityState === 'visible';
+  try {
+    if (want && !wakeLock) {
+      wakeLock = await navigator.wakeLock.request('screen');
+      wakeLock.addEventListener('release', () => { wakeLock = null; });
+    } else if (!want && wakeLock) {
+      await wakeLock.release();
+      wakeLock = null;
+    }
+  } catch { /* refused (battery saver, not visible...): nothing else to do */ }
+}
+document.addEventListener('visibilitychange', syncWakeLock);
+
 // ---------------- boot ----------------
 audio.setVolume(lib.volume());
 audio.onState((st) => {
   renderTransport();
   renderList();
+  syncWakeLock();
   if (st.error) toast(`Playback problem: ${st.error}`, 'warn');
 });
 lib.onLibrary(() => {
