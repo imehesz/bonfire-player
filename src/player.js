@@ -342,7 +342,7 @@ function renderTransport() {
   playBtn.setAttribute('aria-label', playing ? 'Pause' : 'Play');
   const t = byId(loadedId ?? currentId);
   fill(nowPlaying, t ? [h('img', { src: imageOf(t), alt: '' }), h('span', {}, t.title)] : []);
-  document.title = playing && t ? `${t.title} · BonfireSTACK Tracks` : 'BonfireSTACK Tracks';
+  document.title = playing && t ? `${t.title} - BonfireSTACK` : 'BonfireSTACK Tracks';
 }
 
 // bars from the live waveform, like a little oscilloscope; a flat dotted line while silent
