@@ -8,7 +8,10 @@ app's own engine (no rack on screen).
   their own playlists, and an **OPEN IN BonfireSTACK** button that opens the track's patch in the
   app. Likes and playlists are kept in the browser (localStorage) only.
 - **You** get `admin.html`: sign in, upload a patch, give it a title, description, tags and an
-  optional ambiance image. Tracks without an image show `public/default.jpg`.
+  optional ambiance image. Tracks without an image show `public/default.jpg`. Busy patches can be
+  too much for a small machine to synthesize live, so a track can also get an **MP3 version** (1
+  minute at most): when it has one, the player loops the MP3 instead of the patch; everything else
+  (OPEN IN BonfireSTACK, likes, playlists, timed play) stays the same.
 
 ## Run it locally
 
@@ -59,7 +62,7 @@ Build switches: `VITE_APP_URL` (where the app lives; also where OPEN IN BonfireS
 `VITE_ENGINE=local` (never load from the app), `VITE_ENGINE=remote` (load from the app in dev too).
 
 Data lives in `server/data/` (or `DATA_DIR`): `tracks.json`, `patches/<id>.json`,
-`images/<id>.jpg`. Back that folder up; it is not in git.
+`images/<id>.jpg`, `audio/<id>.mp3`. Back that folder up; it is not in git.
 
 ### API
 
@@ -68,11 +71,14 @@ Data lives in `server/data/` (or `DATA_DIR`): `tracks.json`, `patches/<id>.json`
 | `GET api/tracks` | published tracks |
 | `GET api/tracks/<id>/patch` | a track's patch |
 | `GET api/media/images/<file>` | a track's image |
+| `GET api/media/audio/<file>` | a track's MP3 version |
 | `POST api/login` `{password}` | `{token}`, valid 12 hours; send as `Authorization: Bearer <token>` |
-| `GET / POST api/admin/tracks` | list all (drafts too) / add `{title, description, tags, published, patch, image}` |
+| `GET / POST api/admin/tracks` | list all (drafts too) / add `{title, description, tags, published, patch, image, audio}` |
 | `PUT / DELETE api/admin/tracks/<id>` | change / remove one |
 
 `image` is a `data:` URL; the admin page shrinks pictures to 1920 px JPEGs before sending.
+`audio` is a `data:audio/mpeg` URL of an MP3; the admin page refuses anything over 60 seconds, the
+server anything over 3 MB or not an MP3. `''` removes either one.
 
 ## Deploy
 

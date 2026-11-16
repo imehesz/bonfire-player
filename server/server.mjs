@@ -2,13 +2,15 @@
 // Public:  GET  api/tracks                    the published tracks
 //          GET  api/tracks/<id>/patch         a track's patch (BonfireSTACK JSON)
 //          GET  api/media/images/<file>       a track's ambiance image
+//          GET  api/media/audio/<file>        a track's MP3 version (when it has one, the player plays that)
 // Admin:   POST api/login {password}          -> { token } (send it as Authorization: Bearer <token>)
 //          GET  api/admin/tracks              every track, drafts too
-//          POST api/admin/tracks              new track   { title, description, tags, published, patch, image }
-//          PUT  api/admin/tracks/<id>         change one  (any of the fields above; image '' removes it)
+//          POST api/admin/tracks              new track   { title, description, tags, published, patch, image, audio }
+//          PUT  api/admin/tracks/<id>         change one  (any of the fields above; image / audio '' removes it)
 //          DELETE api/admin/tracks/<id>
-// `image` is a data: URL (the admin page shrinks it first). Everything is kept as plain files under
-// DATA_DIR: tracks.json, patches/<id>.json, images/<id>.<ext>.
+// `image` is a data: URL (the admin page shrinks it first); `audio` a data:audio/mpeg URL of an MP3 of
+// at most a minute (the admin page checks the length, the server the size). Everything is kept as
+// plain files under DATA_DIR: tracks.json, patches/<id>.json, images/<id>.<ext>, audio/<id>.mp3.
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
@@ -37,10 +39,11 @@ const DATA = path.resolve(process.env.DATA_DIR || path.join(here, 'data'));
 const KEY = crypto.createHash('sha256').update(`${PASSWORD}\n${process.env.SESSION_SECRET || ''}`).digest();
 const TOKEN_HOURS = 12;
 const MAX_BODY = 12 * 1024 * 1024;
+const AUDIO_MAX = 3 * 1024 * 1024; // a minute of MP3 at 320 kbps is ~2.4 MB
 const IMAGE_TYPES = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp' };
-const MIME = { jpg: 'image/jpeg', png: 'image/png', webp: 'image/webp', html: 'text/html; charset=utf-8', js: 'text/javascript', css: 'text/css', json: 'application/json', svg: 'image/svg+xml', ico: 'image/x-icon', txt: 'text/plain' };
+const MIME = { mp3: 'audio/mpeg', jpg: 'image/jpeg', png: 'image/png', webp: 'image/webp', html: 'text/html; charset=utf-8', js: 'text/javascript', css: 'text/css', json: 'application/json', svg: 'image/svg+xml', ico: 'image/x-icon', txt: 'text/plain' };
 
-for (const d of ['', 'patches', 'images']) fs.mkdirSync(path.join(DATA, d), { recursive: true });
+for (const d of ['', 'patches', 'images', 'audio']) fs.mkdirSync(path.join(DATA, d), { recursive: true });
 const INDEX = path.join(DATA, 'tracks.json');
 const readTracks = () => (fs.existsSync(INDEX) ? JSON.parse(fs.readFileSync(INDEX, 'utf8')) : []);
 function writeFile(file, data) {
@@ -126,10 +129,31 @@ function saveImage(track, dataUrl) {
   writeFile(path.join(DATA, 'images', track.image), bytes);
 }
 
+// data:audio URL -> MP3 bytes (ID3 tag or an MPEG audio frame header at the start)
+function decodeAudio(dataUrl) {
+  const m = /^data:audio\/(?:mpeg|mp3|mpeg3|x-mpeg-3);base64,([A-Za-z0-9+/=]+)$/.exec(String(dataUrl));
+  const bytes = m ? Buffer.from(m[1], 'base64') : null;
+  const mp3 = bytes && bytes.length > 4 && (bytes.toString('latin1', 0, 3) === 'ID3' || (bytes[0] === 0xff && (bytes[1] & 0xe0) === 0xe0));
+  if (!mp3) throw Object.assign(new Error('The audio has to be an MP3 file.'), { status: 400 });
+  if (bytes.length > AUDIO_MAX) throw Object.assign(new Error('That MP3 is too big (3 MB at most; a minute at 320 kbps fits).'), { status: 413 });
+  return bytes;
+}
+function removeAudio(track) {
+  if (track.audio) fs.rmSync(path.join(DATA, 'audio', track.audio), { force: true });
+  track.audio = null;
+}
+function saveAudio(track, dataUrl) {
+  const bytes = decodeAudio(dataUrl);
+  removeAudio(track);
+  track.audio = `${track.id}.mp3`;
+  writeFile(path.join(DATA, 'audio', track.audio), bytes);
+}
+
 // what listeners get: no drafts, no server-side fields
 const publicTrack = (t) => ({
   id: t.id, title: t.title, description: t.description, tags: t.tags, created: t.created, updated: t.updated,
   image: t.image ? `api/media/images/${t.image}?v=${t.updated}` : null,
+  audio: t.audio ? `api/media/audio/${t.audio}?v=${t.updated}` : null,
   modules: t.modules ?? null, bpm: t.bpm ?? null,
 });
 const adminTrack = (t) => ({ ...publicTrack(t), published: !!t.published, warnings: t.warnings ?? [] });
@@ -144,6 +168,7 @@ function describePatch(track, patch) {
 }
 
 function applyFields(track, body) {
+  if (body.audio) decodeAudio(body.audio); // a bad MP3 fails before anything is written
   if (body.title !== undefined) {
     const title = String(body.title).trim().slice(0, 80);
     if (!title) throw Object.assign(new Error('A track needs a title.'), { status: 400 });
@@ -159,6 +184,8 @@ function applyFields(track, body) {
   }
   if (body.image === '' || body.image === null) removeImage(track);
   else if (body.image !== undefined) saveImage(track, body.image);
+  if (body.audio === '' || body.audio === null) removeAudio(track);
+  else if (body.audio !== undefined) saveAudio(track, body.audio);
   track.updated = Date.now();
 }
 
@@ -180,6 +207,11 @@ async function api(req, res, url) {
     if (!fs.existsSync(file)) return fail(res, 404, 'No such image.');
     return send(res, 200, fs.readFileSync(file), MIME[c.split('.').pop()], { 'Cache-Control': 'public, max-age=31536000, immutable' });
   }
+  if (a === 'media' && b === 'audio' && m === 'GET' && /^[a-z0-9-]+\.mp3$/.test(c ?? '')) {
+    const file = path.join(DATA, 'audio', c);
+    if (!fs.existsSync(file)) return fail(res, 404, 'No such audio.');
+    return send(res, 200, fs.readFileSync(file), MIME.mp3, { 'Cache-Control': 'public, max-age=31536000, immutable' });
+  }
   if (a === 'login' && m === 'POST') {
     const body = await readBody(req);
     if (!same(body.password ?? '', PASSWORD)) {
@@ -199,7 +231,7 @@ async function api(req, res, url) {
       const base = slug(body.title ?? body.patch?.name ?? 'track');
       let id = base;
       for (let n = 2; list.some((t) => t.id === id); n++) id = `${base}-${n}`;
-      const track = { id, title: '', description: '', tags: [], published: true, image: null, created: Date.now(), updated: Date.now() };
+      const track = { id, title: '', description: '', tags: [], published: true, image: null, audio: null, created: Date.now(), updated: Date.now() };
       applyFields(track, { title: body.patch?.name ?? '', description: body.patch?.description ?? '', ...body });
       list.push(track);
       writeTracks(list);
@@ -214,6 +246,7 @@ async function api(req, res, url) {
     }
     if (track && m === 'DELETE') {
       removeImage(track);
+      removeAudio(track);
       fs.rmSync(path.join(DATA, 'patches', `${track.id}.json`), { force: true });
       writeTracks(list.filter((t) => t !== track));
       return send(res, 200, { ok: true });

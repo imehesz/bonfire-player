@@ -47,13 +47,15 @@ function visibleTracks() {
 async function playTrack(id, { fromList = true } = {}) {
   const t = byId(id);
   if (!t || busy) return;
+  if (t.audio) audio.unlockFile(); // must happen inside the tap, before anything is awaited
   busy = true;
   if (fromList) queue = visibleTracks().map((x) => x.id);
   if (!queue.includes(id)) queue = [id, ...queue];
   select(id);
   setLoading(true);
   try {
-    const { warnings } = await audio.play(await patchOf(id));
+    // the MP3 version when there is one: busy patches can be too much to synthesize live
+    const { warnings } = t.audio ? await audio.playFile(t.audio) : await audio.play(await patchOf(id));
     loadedId = id;
     playedFor = 0;
     for (const w of warnings) toast(w, 'warn');
@@ -184,6 +186,27 @@ function setLoading(on) {
 }
 
 // ---------------- sidebar ----------------
+// Any tag, anywhere (sidebar, the track on show, the list rows): filter the list by it right away;
+// the tag that is already on clears the filter. On a phone the list sits further down: bring it up.
+function filterByTag(tag) {
+  view.tag = view.tag === tag ? null : tag;
+  renderSidebar();
+  renderHero();
+  renderList();
+  const r = listTitle.getBoundingClientRect();
+  if (r.top < 0 || r.top > innerHeight - 120) listTitle.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+// sidebar tag cloud: tags on more tracks are drawn a step bigger (5 or more, then more than 10)
+const tagWeight = (n) => (n > 10 ? 'w2' : n >= 5 ? 'w1' : '');
+const tagChip = (tag, extra = '') => h('button', {
+  class: `chip ${extra} ${view.tag === tag ? 'on' : ''}`, 'aria-pressed': String(view.tag === tag),
+  'aria-label': view.tag === tag ? `Stop filtering by ${tag}` : `Show only ${tag} tracks`,
+  onclick: (e) => {
+    e.stopPropagation();
+    filterByTag(tag);
+  },
+}, tag);
+
 function setList(id) {
   view.list = id;
   renderSidebar();
@@ -231,14 +254,7 @@ function renderSidebar() {
         if (p) setList(p.id);
       } }, '+ New playlist')),
     allTags.length ? h('h3', {}, 'Tags') : null,
-    h('div', { class: 'tags' }, allTags.map((tag) => h('button', {
-      class: `chip ${view.tag === tag ? 'on' : ''}`,
-      onclick: () => {
-        view.tag = view.tag === tag ? null : tag;
-        renderSidebar();
-        renderList();
-      },
-    }, tag))),
+    h('div', { class: 'tags' }, allTags.map((tag) => tagChip(tag, tagWeight(tracks.filter((t) => t.tags.includes(tag)).length)))),
     h('p', { class: 'fine' }, 'Favorites and playlists are saved in this browser only.'),
     h('p', { class: 'fine engine' }, `Engine: ${audio.engineSource()}`));
 }
@@ -292,7 +308,7 @@ function renderHero() {
   patchOf(t.id).then(audio.openInAppUrl).then((url) => (open.href = url)).catch(() => {});
   fill(hero, 
     h('h1', {}, t.title),
-    h('div', { class: 'tags row' }, t.tags.map((tag) => h('span', { class: 'chip static' }, tag))),
+    h('div', { class: 'tags row' }, t.tags.map((tag) => tagChip(tag, 'compact'))),
     t.description ? h('p', { class: 'desc' }, t.description) : null,
     h('div', { class: 'actions' },
       h('button', { class: `btn heart ${fav ? 'on' : ''}`, 'aria-pressed': String(fav), onclick: () => lib.toggleFavorite(t.id) }, fav ? '♥ Liked' : '♡ Like'),
@@ -309,11 +325,7 @@ function listName() {
 
 function renderList() {
   const list = visibleTracks();
-  fill(listTitle, h('span', {}, listName()), view.tag ? h('button', { class: 'chip on', onclick: () => {
-    view.tag = null;
-    renderSidebar();
-    renderList();
-  } }, `${view.tag} ✕`) : null, h('em', {}, `${list.length} ${list.length === 1 ? 'track' : 'tracks'}`));
+  fill(listTitle, h('span', {}, listName()), view.tag ? h('button', { class: 'chip on', 'aria-label': `Stop filtering by ${view.tag}`, onclick: () => filterByTag(view.tag) }, `${view.tag} ✕`) : null, h('em', {}, `${list.length} ${list.length === 1 ? 'track' : 'tracks'}`));
   if (!list.length) {
     const why = view.q.trim() || view.tag ? 'Nothing matches that. Try another search or tag.'
       : view.list === 'fav' ? 'Nothing here yet. Tap the ♡ on a track to keep it in Favorites.'
@@ -325,12 +337,15 @@ function renderList() {
   fill(listBox, list.map((t) => {
     const fav = lib.isFavorite(t.id);
     const playing = t.id === loadedId && audio.isPlaying();
+    // the play button covers the whole row from underneath; the tags and the heart sit on top of it
+    // (a button can't hold other buttons)
     return h('div', { class: `track ${t.id === currentId ? 'on' : ''} ${playing ? 'playing' : ''}` },
-      h('button', { class: 'track-main', onclick: () => playTrack(t.id), 'aria-label': `Play ${t.title}` },
+      h('button', { class: 'track-hit', onclick: () => playTrack(t.id), 'aria-label': `Play ${t.title}` }),
+      h('div', { class: 'track-main' },
         h('img', { class: 'thumb', src: imageOf(t), alt: '', loading: 'lazy' }),
         h('span', { class: 'track-text' },
           h('span', { class: 'track-title' }, t.title, playing ? h('i', { class: 'eq', 'aria-hidden': 'true' }, h('b'), h('b'), h('b')) : null),
-          h('span', { class: 'tags row' }, t.tags.map((tag) => h('span', { class: 'chip static small' }, tag))))),
+          h('span', { class: 'tags row' }, t.tags.map((tag) => tagChip(tag, 'compact small'))))),
       h('button', { class: `heart-btn ${fav ? 'on' : ''}`, 'aria-label': fav ? `Unlike ${t.title}` : `Like ${t.title}`, 'aria-pressed': String(fav), onclick: () => lib.toggleFavorite(t.id) }, fav ? '♥' : '♡'));
   }));
 }
